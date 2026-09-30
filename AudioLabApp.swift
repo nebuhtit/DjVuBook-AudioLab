@@ -1,8 +1,9 @@
 import AppKit
+import AVFoundation
 import CryptoKit
 import UniformTypeIdentifiers
 
-final class AudioLab: NSObject, NSApplicationDelegate {
+final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     var window: NSWindow!
     var sourceField = NSTextField(string: "")
     var textInput = NSTextView()
@@ -13,9 +14,17 @@ final class AudioLab: NSObject, NSApplicationDelegate {
     var speedSlider = NSSlider(value:1.0,minValue:0.7,maxValue:1.5,target:nil,action:nil)
     var sentencePauseSlider = NSSlider(value:0.6,minValue:0.2,maxValue:2.0,target:nil,action:nil)
     var paragraphPauseSlider = NSSlider(value:1.8,minValue:0.8,maxValue:5.0,target:nil,action:nil)
+    var punctuationPauseSlider = NSSlider(value:0.25,minValue:0.05,maxValue:1.0,target:nil,action:nil)
     var speedValue = NSTextField(labelWithString:"1.00×")
     var sentencePauseValue = NSTextField(labelWithString:"0.6 с")
     var paragraphPauseValue = NSTextField(labelWithString:"1.8 с")
+    var punctuationPauseValue = NSTextField(labelWithString:"0.25 с")
+    var audioPlayer: AVAudioPlayer?
+    var audioTimer: Timer?
+    var audioSeekSlider = NSSlider(value:0,minValue:0,maxValue:1,target:nil,action:nil)
+    var audioTimeLabel = NSTextField(labelWithString:"00:00 / 00:00")
+    var playAudioButton: NSButton!
+    var stopAudioButton: NSButton!
     var speechProgress = NSProgressIndicator()
     var speechProcess: Process?
     var stopSpeechButton: NSButton!
@@ -70,8 +79,8 @@ final class AudioLab: NSObject, NSApplicationDelegate {
         engine.addItems(withTitles:["Marker — внешний диск","Tesseract — лёгкий"]);engine.selectItem(at:0)
         memory.addItems(withTitles:["Экономный — один запрос","Больше памяти — два запроса"])
         let choices=NSStackView(views:[label("OCR"),engine,label("Память"),memory]);choices.spacing=8;main.addArrangedSubview(choices)
-        addDirectoryRow(title:"Окружение OCR / Marker",field:ocrLibraryField,key:"ocrLibraryRoot",fallback:"/Volumes/DjVuBookLibraries/DjVuBook-Marker",to:main)
-        addDirectoryRow(title:"Окружение озвучивания / Silero",field:ttsLibraryField,key:"ttsLibraryRoot",fallback:"/Volumes/DjVuBookLibraries/DjVuBook-Marker",to:main)
+        addDirectoryRow(title:"Окружение OCR / Marker",field:ocrLibraryField,key:"ocrLibraryRoot",fallback:"/Volumes/4TB_FILES_2025/DjVuBook-Marker",to:main)
+        addDirectoryRow(title:"Окружение озвучивания / Silero",field:ttsLibraryField,key:"ttsLibraryRoot",fallback:"/Volumes/4TB_FILES_2025/DjVuBook-Marker",to:main)
         titleField.placeholderString="Название книги";authorField.placeholderString="Автор (необязательно)";pagesField.stringValue="all"
         for (name,field) in [("Название",titleField),("Автор",authorField),("Страницы",pagesField)] { let row=NSStackView(views:[label(name),field]);row.spacing=10;field.widthAnchor.constraint(equalToConstant:570).isActive=true;main.addArrangedSubview(row) }
         let buttons=NSStackView();buttons.spacing=8
@@ -90,11 +99,18 @@ final class AudioLab: NSObject, NSApplicationDelegate {
         speedSlider.target=self;speedSlider.action=#selector(speechSettingsChanged);speedSlider.numberOfTickMarks=17
         sentencePauseSlider.target=self;sentencePauseSlider.action=#selector(speechSettingsChanged);sentencePauseSlider.numberOfTickMarks=10
         paragraphPauseSlider.target=self;paragraphPauseSlider.action=#selector(speechSettingsChanged);paragraphPauseSlider.numberOfTickMarks=15
-        speedValue.widthAnchor.constraint(equalToConstant:55).isActive=true;sentencePauseValue.widthAnchor.constraint(equalToConstant:55).isActive=true;paragraphPauseValue.widthAnchor.constraint(equalToConstant:55).isActive=true
-        for (title,slider,value) in [("Скорость чтения",speedSlider,speedValue),("Пауза между предложениями",sentencePauseSlider,sentencePauseValue),("Пауза между абзацами",paragraphPauseSlider,paragraphPauseValue)] {let row=NSStackView(views:[label(title),slider,value]);row.spacing=10;slider.widthAnchor.constraint(equalToConstant:430).isActive=true;main.addArrangedSubview(row)}
+        punctuationPauseSlider.target=self;punctuationPauseSlider.action=#selector(speechSettingsChanged);punctuationPauseSlider.numberOfTickMarks=20
+        for value in [speedValue,sentencePauseValue,paragraphPauseValue,punctuationPauseValue]{value.widthAnchor.constraint(equalToConstant:60).isActive=true}
+        for (title,slider,value) in [("Скорость чтения",speedSlider,speedValue),("Пауза между предложениями",sentencePauseSlider,sentencePauseValue),("Пауза между абзацами",paragraphPauseSlider,paragraphPauseValue),("Пауза после запятых, скобок и кавычек",punctuationPauseSlider,punctuationPauseValue)] {let row=NSStackView(views:[label(title),slider,value]);row.spacing=10;slider.widthAnchor.constraint(equalToConstant:430).isActive=true;main.addArrangedSubview(row)}
         speechNotice.textColor = .secondaryLabelColor;main.addArrangedSubview(speechNotice)
         let voiceInfo=NSTextField(wrappingLabelWithString:"Русские голоса подписаны по полу. У английской модели только номера голосов без надёжных описаний, поэтому выберите вариант и нажмите «Прослушать пример».");voiceInfo.textColor = .secondaryLabelColor;main.addArrangedSubview(voiceInfo)
         speechProgress.isIndeterminate=true;speechProgress.isDisplayedWhenStopped=false;speechProgress.widthAnchor.constraint(equalToConstant:730).isActive=true;main.addArrangedSubview(speechProgress)
+        let playerRow=NSStackView();playerRow.spacing=8
+        let openAudio=NSButton(title:"Открыть MP3…",target:self,action:#selector(openAudioFile));playerRow.addArrangedSubview(openAudio)
+        playAudioButton=NSButton(title:"▶ Слушать",target:self,action:#selector(toggleAudio));playAudioButton.isEnabled=false;playerRow.addArrangedSubview(playAudioButton)
+        stopAudioButton=NSButton(title:"Стоп",target:self,action:#selector(stopAudio));stopAudioButton.isEnabled=false;playerRow.addArrangedSubview(stopAudioButton)
+        audioSeekSlider.isEnabled=false;audioSeekSlider.target=self;audioSeekSlider.action=#selector(seekAudio);audioSeekSlider.widthAnchor.constraint(equalToConstant:300).isActive=true;playerRow.addArrangedSubview(audioSeekSlider)
+        audioTimeLabel.widthAnchor.constraint(equalToConstant:100).isActive=true;playerRow.addArrangedSubview(audioTimeLabel);main.addArrangedSubview(playerRow)
         status.lineBreakMode = .byWordWrapping;main.addArrangedSubview(status)
         main.addArrangedSubview(timeLabel)
         progress.isIndeterminate=false;progress.maxValue=1;progress.isDisplayedWhenStopped=false;progress.widthAnchor.constraint(equalToConstant:720).isActive=true;main.addArrangedSubview(progress)
@@ -141,11 +157,11 @@ final class AudioLab: NSObject, NSApplicationDelegate {
         textInput.insertText(text,replacementRange:textInput.selectedRange())
         textChanged();status.stringValue="Текст вставлен в поле. Можно продолжить редактирование."
     }
-    func savePrefs(){UserDefaults.standard.set(sourceField.stringValue,forKey:"source");UserDefaults.standard.set(pagesField.stringValue,forKey:"pages");UserDefaults.standard.set(titleField.stringValue,forKey:"title");UserDefaults.standard.set(authorField.stringValue,forKey:"author");UserDefaults.standard.set(engine.indexOfSelectedItem,forKey:"engine");UserDefaults.standard.set(memory.indexOfSelectedItem,forKey:"memory");UserDefaults.standard.set(language.indexOfSelectedItem,forKey:"speechLanguage");UserDefaults.standard.set(speedSlider.doubleValue,forKey:"speechSpeed");UserDefaults.standard.set(sentencePauseSlider.doubleValue,forKey:"sentencePause");UserDefaults.standard.set(paragraphPauseSlider.doubleValue,forKey:"paragraphPause");UserDefaults.standard.set(textInput.string,forKey:"draftText");UserDefaults.standard.set(ocrLibraryField.stringValue,forKey:"ocrLibraryRoot");UserDefaults.standard.set(ttsLibraryField.stringValue,forKey:"ttsLibraryRoot")}
-    func restore(){sourceField.stringValue=UserDefaults.standard.string(forKey:"source") ?? "";pagesField.stringValue=UserDefaults.standard.string(forKey:"pages") ?? "all";titleField.stringValue=UserDefaults.standard.string(forKey:"title") ?? "";authorField.stringValue=UserDefaults.standard.string(forKey:"author") ?? "";textInput.string=UserDefaults.standard.string(forKey:"draftText") ?? "";ocrLibraryField.stringValue=UserDefaults.standard.string(forKey:"ocrLibraryRoot") ?? ocrLibraryField.stringValue;ttsLibraryField.stringValue=UserDefaults.standard.string(forKey:"ttsLibraryRoot") ?? ttsLibraryField.stringValue;engine.selectItem(at:UserDefaults.standard.integer(forKey:"engine"));memory.selectItem(at:UserDefaults.standard.integer(forKey:"memory"));language.selectItem(at:UserDefaults.standard.integer(forKey:"speechLanguage"));speedSlider.doubleValue=UserDefaults.standard.object(forKey:"speechSpeed") as? Double ?? 1.0;sentencePauseSlider.doubleValue=UserDefaults.standard.object(forKey:"sentencePause") as? Double ?? 0.6;paragraphPauseSlider.doubleValue=UserDefaults.standard.object(forKey:"paragraphPause") as? Double ?? 1.8;updateVoiceOptions();speechSettingsChanged();textChanged()}
+    func savePrefs(){UserDefaults.standard.set(sourceField.stringValue,forKey:"source");UserDefaults.standard.set(pagesField.stringValue,forKey:"pages");UserDefaults.standard.set(titleField.stringValue,forKey:"title");UserDefaults.standard.set(authorField.stringValue,forKey:"author");UserDefaults.standard.set(engine.indexOfSelectedItem,forKey:"engine");UserDefaults.standard.set(memory.indexOfSelectedItem,forKey:"memory");UserDefaults.standard.set(language.indexOfSelectedItem,forKey:"speechLanguage");UserDefaults.standard.set(speedSlider.doubleValue,forKey:"speechSpeed");UserDefaults.standard.set(sentencePauseSlider.doubleValue,forKey:"sentencePause");UserDefaults.standard.set(paragraphPauseSlider.doubleValue,forKey:"paragraphPause");UserDefaults.standard.set(punctuationPauseSlider.doubleValue,forKey:"punctuationPause");UserDefaults.standard.set(textInput.string,forKey:"draftText");UserDefaults.standard.set(ocrLibraryField.stringValue,forKey:"ocrLibraryRoot");UserDefaults.standard.set(ttsLibraryField.stringValue,forKey:"ttsLibraryRoot")}
+    func restore(){sourceField.stringValue=UserDefaults.standard.string(forKey:"source") ?? "";pagesField.stringValue=UserDefaults.standard.string(forKey:"pages") ?? "all";titleField.stringValue=UserDefaults.standard.string(forKey:"title") ?? "";authorField.stringValue=UserDefaults.standard.string(forKey:"author") ?? "";textInput.string=UserDefaults.standard.string(forKey:"draftText") ?? "";ocrLibraryField.stringValue=UserDefaults.standard.string(forKey:"ocrLibraryRoot") ?? ocrLibraryField.stringValue;ttsLibraryField.stringValue=UserDefaults.standard.string(forKey:"ttsLibraryRoot") ?? ttsLibraryField.stringValue;engine.selectItem(at:UserDefaults.standard.integer(forKey:"engine"));memory.selectItem(at:UserDefaults.standard.integer(forKey:"memory"));language.selectItem(at:UserDefaults.standard.integer(forKey:"speechLanguage"));speedSlider.doubleValue=UserDefaults.standard.object(forKey:"speechSpeed") as? Double ?? 1.0;sentencePauseSlider.doubleValue=UserDefaults.standard.object(forKey:"sentencePause") as? Double ?? 0.6;paragraphPauseSlider.doubleValue=UserDefaults.standard.object(forKey:"paragraphPause") as? Double ?? 1.8;punctuationPauseSlider.doubleValue=UserDefaults.standard.object(forKey:"punctuationPause") as? Double ?? 0.25;updateVoiceOptions();speechSettingsChanged();textChanged()}
     func append(_ s:String){log.textStorage?.append(NSAttributedString(string:s));log.scrollToEndOfDocument(nil)}
     @objc func languageChanged(){updateVoiceOptions();savePrefs()}
-    @objc func speechSettingsChanged(){speedValue.stringValue=String(format:"%.2f×",speedSlider.doubleValue);sentencePauseValue.stringValue=String(format:"%.1f с",sentencePauseSlider.doubleValue);paragraphPauseValue.stringValue=String(format:"%.1f с",paragraphPauseSlider.doubleValue);savePrefs()}
+    @objc func speechSettingsChanged(){speedValue.stringValue=String(format:"%.2f×",speedSlider.doubleValue);sentencePauseValue.stringValue=String(format:"%.1f с",sentencePauseSlider.doubleValue);paragraphPauseValue.stringValue=String(format:"%.1f с",paragraphPauseSlider.doubleValue);punctuationPauseValue.stringValue=String(format:"%.2f с",punctuationPauseSlider.doubleValue);savePrefs()}
     func updateVoiceOptions(){
         voice.removeAllItems()
         if language.indexOfSelectedItem == 0 {
@@ -195,14 +211,38 @@ final class AudioLab: NSObject, NSApplicationDelegate {
             let speakers=["baya","kseniya","xenia","aidar","eugene"]
             let englishSpeakers=[0,12,24,48,72,96,117]
             let selectedSpeaker=isEnglish ? "en_\(englishSpeakers[voice.indexOfSelectedItem])" : speakers[voice.indexOfSelectedItem]
-            let proc=Process();proc.executableURL=py;proc.arguments=[script.path,txt.path,dest.path,model.path,selectedSpeaker,String(format:"%.2f",speedSlider.doubleValue),String(format:"%.1f",sentencePauseSlider.doubleValue),String(format:"%.1f",paragraphPauseSlider.doubleValue)]
+            let proc=Process();proc.executableURL=py;proc.arguments=[script.path,txt.path,dest.path,model.path,selectedSpeaker,String(format:"%.2f",speedSlider.doubleValue),String(format:"%.1f",sentencePauseSlider.doubleValue),String(format:"%.1f",paragraphPauseSlider.doubleValue),String(format:"%.2f",punctuationPauseSlider.doubleValue)]
             let channel=Pipe();proc.standardOutput=channel;proc.standardError=channel
             channel.fileHandleForReading.readabilityHandler={ [weak self] h in let data=h.availableData;if data.isEmpty{return};let s=String(decoding:data,as:UTF8.self);DispatchQueue.main.async{self?.append(s);self?.speechNotice.stringValue=String(s.split(separator:"\n").last ?? "Озвучивание…")}}
-            proc.terminationHandler={ [weak self] p in DispatchQueue.main.async{guard let self=self else{return};self.speechProcess=nil;self.stopSpeechButton.isEnabled=false;self.previewVoiceButton.isEnabled=true;self.speechProgress.stopAnimation(nil);self.speakButton.isEnabled = !self.textInput.string.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty;if p.terminationStatus==0{self.speechNotice.stringValue=isPreview ? "Пример готов — открываю MP3" : "MP3 готов: \(dest.lastPathComponent)";self.append("MP3 сохранён: \(dest.path)\n");if isPreview{NSWorkspace.shared.open(dest)}}else{self.speechNotice.stringValue="Озвучивание остановлено или завершилось с ошибкой; подробности в журнале"};if self.previewOutput==dest{self.previewOutput=nil};try? FileManager.default.removeItem(at:temp)}}
+            proc.terminationHandler={ [weak self] p in DispatchQueue.main.async{guard let self=self else{return};self.speechProcess=nil;self.stopSpeechButton.isEnabled=false;self.previewVoiceButton.isEnabled=true;self.speechProgress.stopAnimation(nil);self.speakButton.isEnabled = !self.textInput.string.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty;if p.terminationStatus==0{self.speechNotice.stringValue=isPreview ? "Пример голоса готов" : "MP3 готов: \(dest.lastPathComponent)";self.append("MP3 сохранён: \(dest.path)\n");self.loadAudio(dest,autoplay:isPreview)}else{self.speechNotice.stringValue="Озвучивание остановлено или завершилось с ошибкой; подробности в журнале"};if self.previewOutput==dest{self.previewOutput=nil};try? FileManager.default.removeItem(at:temp)}}
             try proc.run();speechProcess=proc;speechProgress.startAnimation(nil);speakButton.isEnabled=false;previewVoiceButton.isEnabled=false;stopSpeechButton.isEnabled=true;speechNotice.stringValue="Загружаю модель и озвучиваю…";append("\nЗапуск Silero \(isEnglish ? "v3 English":"v5.5 Russian"), голос \(selectedSpeaker)\n")
         } catch {previewOutput=nil;previewVoiceButton.isEnabled=true;speechNotice.stringValue="Не удалось запустить озвучивание: \(error)"}
     }
     @objc func stopSpeech(){guard let p=speechProcess else{return};speechNotice.stringValue="Останавливаю озвучивание…";p.terminate()}
+    func loadAudio(_ url:URL,autoplay:Bool=false){
+        do{
+            stopAudio()
+            let player=try AVAudioPlayer(contentsOf:url)
+            player.delegate=self;player.prepareToPlay();audioPlayer=player
+            audioSeekSlider.minValue=0;audioSeekSlider.maxValue=max(player.duration,1);audioSeekSlider.doubleValue=0;audioSeekSlider.isEnabled=true
+            audioTimeLabel.stringValue="00:00 / \(clockString(player.duration))"
+            playAudioButton.isEnabled=true;stopAudioButton.isEnabled=true
+            if autoplay{toggleAudio()}
+        }catch{speechNotice.stringValue="Не удалось открыть MP3: \(error.localizedDescription)"}
+    }
+    func clockString(_ seconds:TimeInterval)->String{let value=max(0,Int(seconds));return String(format:"%02d:%02d",value/60,value%60)}
+    @objc func openAudioFile(){
+        let panel=NSOpenPanel();panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.allowedContentTypes=[.mp3];panel.message="Выберите MP3 для прослушивания"
+        if panel.runModal() == .OK,let url=panel.url{loadAudio(url);speechNotice.stringValue="Готово к прослушиванию: \(url.lastPathComponent)"}
+    }
+    @objc func toggleAudio(){
+        guard let player=audioPlayer else{return}
+        if player.isPlaying{player.pause();playAudioButton.title="▶ Продолжить";audioTimer?.invalidate();audioTimer=nil}
+        else{if player.currentTime>=player.duration{player.currentTime=0};player.play();playAudioButton.title="⏸ Пауза";audioTimer?.invalidate();audioTimer=Timer.scheduledTimer(withTimeInterval:0.25,repeats:true){[weak self,weak player] timer in guard let self=self,let player=player else{timer.invalidate();return};self.audioSeekSlider.doubleValue=player.currentTime;self.audioTimeLabel.stringValue="\(self.clockString(player.currentTime)) / \(self.clockString(player.duration))";if !player.isPlaying{timer.invalidate();self.audioTimer=nil;self.playAudioButton.title="▶ Слушать"}}}
+    }
+    @objc func stopAudio(){audioPlayer?.stop();audioPlayer?.currentTime=0;audioTimer?.invalidate();audioTimer=nil;audioSeekSlider.doubleValue=0;playAudioButton?.title="▶ Слушать";audioTimeLabel.stringValue="00:00 / \(clockString(audioPlayer?.duration ?? 0))"}
+    @objc func seekAudio(){guard let player=audioPlayer else{return};player.currentTime=audioSeekSlider.doubleValue;audioTimeLabel.stringValue="\(clockString(player.currentTime)) / \(clockString(player.duration))"}
+    func audioPlayerDidFinishPlaying(_ player:AVAudioPlayer,successfully flag:Bool){audioTimer?.invalidate();audioTimer=nil;playAudioButton.title="▶ Слушать";audioSeekSlider.doubleValue=player.duration;audioTimeLabel.stringValue="\(clockString(player.duration)) / \(clockString(player.duration))"}
     func textBookDirectory() throws -> URL {
         let dir=root.appendingPathComponent("books/Вставленный-текст",isDirectory:true)
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
