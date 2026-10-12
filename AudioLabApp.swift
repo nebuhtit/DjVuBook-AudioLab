@@ -34,6 +34,9 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     var videoExtractionProcess: Process?
     var videoExtractionProgress = NSProgressIndicator()
     var videoExtractionNotice = NSTextField(labelWithString: "Извлекайте аудиодорожку из видео в MP3 офлайн")
+    var convertFormatsButton: NSButton!
+    var formatConversionProcess: Process?
+    var formatConversionNotice = NSTextField(labelWithString: "PDF, DjVu, изображения, EPUB и текстовые форматы")
     var speechProgress = NSProgressIndicator()
     var speechProcess: Process?
     var transcriptionProcess: Process?
@@ -86,7 +89,9 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         outerScroll.documentView=main
         NSLayoutConstraint.activate([outerScroll.leadingAnchor.constraint(equalTo:window.contentView!.leadingAnchor),outerScroll.trailingAnchor.constraint(equalTo:window.contentView!.trailingAnchor),outerScroll.topAnchor.constraint(equalTo:window.contentView!.topAnchor),outerScroll.bottomAnchor.constraint(equalTo:window.contentView!.bottomAnchor),main.leadingAnchor.constraint(equalTo:outerScroll.contentView.leadingAnchor),main.trailingAnchor.constraint(equalTo:outerScroll.contentView.trailingAnchor),main.topAnchor.constraint(equalTo:outerScroll.contentView.topAnchor),main.widthAnchor.constraint(equalTo:outerScroll.contentView.widthAnchor),main.heightAnchor.constraint(greaterThanOrEqualTo:outerScroll.contentView.heightAnchor)])
         let heading=NSTextField(labelWithString:"DjVuBook AudioLab"); heading.font=NSFont.boldSystemFont(ofSize:23); main.addArrangedSubview(heading)
-        let pick=NSButton(title:"Выбрать файл или папку…",target:self,action:#selector(choose)); main.addArrangedSubview(pick)
+        let sourceActions=NSStackView();sourceActions.spacing=8
+        let pick=NSButton(title:"Выбрать файл или папку…",target:self,action:#selector(choose));sourceActions.addArrangedSubview(pick)
+        convertFormatsButton=NSButton(title:"Конвертировать форматы…",target:self,action:#selector(convertFileFormats));sourceActions.addArrangedSubview(convertFormatsButton);main.addArrangedSubview(sourceActions)
         sourceField.isEditable=false;sourceField.lineBreakMode = .byTruncatingMiddle;sourceField.widthAnchor.constraint(greaterThanOrEqualToConstant:700).isActive=true;main.addArrangedSubview(sourceField)
         let textActions=NSStackView();textActions.spacing=8
         let importButton=NSButton(title:"Импортировать TXT, MD, HTML или Word…",target:self,action:#selector(importDocument));textActions.addArrangedSubview(importButton)
@@ -145,6 +150,7 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         stopVideoExtractionButton=NSButton(title:"Остановить конвертацию",target:self,action:#selector(stopVideoExtraction));stopVideoExtractionButton.isEnabled=false;videoRow.addArrangedSubview(stopVideoExtractionButton)
         videoExtractionProgress.isIndeterminate=true;videoExtractionProgress.isDisplayedWhenStopped=false;videoExtractionProgress.widthAnchor.constraint(equalToConstant:180).isActive=true;videoRow.addArrangedSubview(videoExtractionProgress);main.addArrangedSubview(videoRow)
         videoExtractionNotice.textColor = .secondaryLabelColor;main.addArrangedSubview(videoExtractionNotice)
+        formatConversionNotice.textColor = .secondaryLabelColor;main.addArrangedSubview(formatConversionNotice)
         status.lineBreakMode = .byWordWrapping;main.addArrangedSubview(status)
         main.addArrangedSubview(timeLabel)
         progress.isIndeterminate=false;progress.maxValue=1;progress.isDisplayedWhenStopped=false;progress.widthAnchor.constraint(equalToConstant:720).isActive=true;main.addArrangedSubview(progress)
@@ -360,6 +366,56 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     @objc func openAudioFile(){
         let panel=NSOpenPanel();panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.allowedContentTypes=[.mp3,.aiff,.wav,.mpeg4Audio];panel.message="Выберите MP3, AIFF, WAV или M4A для прослушивания"
         if panel.runModal() == .OK,let url=panel.url{loadAudio(url);speechNotice.stringValue="Готово к прослушиванию: \(url.lastPathComponent)"}
+    }
+    @objc func convertFileFormats(){
+        guard formatConversionProcess == nil else{formatConversionNotice.stringValue="Дождитесь завершения текущей конвертации или остановите её.";return}
+        let sourcePanel=NSOpenPanel();sourcePanel.canChooseFiles=true;sourcePanel.canChooseDirectories=true;sourcePanel.allowsMultipleSelection=true;sourcePanel.message="Выберите документ, одно или несколько изображений либо папку с изображениями"
+        guard sourcePanel.runModal() == .OK,!sourcePanel.urls.isEmpty else{return}
+        let sources=sourcePanel.urls
+        let ext=sources.first?.pathExtension.lowercased() ?? ""
+        let isImageSet=sources.first?.hasDirectoryPath == true || ["jpg","jpeg","png","heic","tif","tiff","bmp","webp"].contains(ext)
+        let isEpub=ext=="epub",isText=["txt","md","markdown","mdown","html","htm","xhtml","docx","doc"].contains(ext)
+        let formats:[(String,String)]
+        if isImageSet{formats=[("PDF","pdf"),("DjVu — со сжатием страниц","djvu"),("EPUB — книга из страниц-изображений","epub"),("PNG — страницы","png"),("JPEG — страницы","jpg")]}
+        else if isEpub{formats=[("TXT — текст глав","txt"),("Markdown — текст глав","md"),("PDF — простой текстовый документ","pdf")]}
+        else if isText{formats=[("TXT — простой текст","txt"),("Markdown","md"),("PDF — простой текстовый документ","pdf"),("EPUB — электронная книга","epub")]}
+        else if ["pdf","djvu","djv"].contains(ext){formats=[("PDF","pdf"),("DjVu — растрированные страницы","djvu"),("PNG — страницы","png"),("JPEG — страницы","jpg"),("TXT — текстовый слой","txt"),("Markdown — текстовый слой","md"),("EPUB — из текстового слоя","epub")]}
+        else{formatConversionNotice.stringValue="Формат \(ext.uppercased()) не поддерживается.";return}
+        let popup=NSPopUpButton(frame:NSRect(x:0,y:0,width:330,height:28),pullsDown:false)
+        popup.addItems(withTitles:formats.map{$0.0})
+        let accessory=NSStackView(views:[label("Формат результата"),popup]);accessory.spacing=10
+        let alert=NSAlert();alert.messageText="Преобразовать выбранное";alert.informativeText="Все операции выполняются локально. PDF → DjVu и PDF/DjVu → картинки растрируют страницы. Извлечение текста из скана требует предварительного OCR.";alert.accessoryView=accessory;alert.addButton(withTitle:"Продолжить");alert.addButton(withTitle:"Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else{return}
+        let target=formats[popup.indexOfSelectedItem].1
+        var destination:URL
+        if target=="png" || target=="jpg"{
+            let folderPanel=NSOpenPanel();folderPanel.canChooseFiles=false;folderPanel.canChooseDirectories=true;folderPanel.canCreateDirectories=true;folderPanel.message="Выберите папку, в которой создать отдельную папку с изображениями"
+            guard folderPanel.runModal() == .OK,let parent=folderPanel.url else{return}
+            let base=sources.first!.hasDirectoryPath ? sources.first!.lastPathComponent : sources.first!.deletingPathExtension().lastPathComponent
+            destination=parent.appendingPathComponent(base+"-"+target.uppercased(),isDirectory:true)
+        }else{
+            let save=NSSavePanel();save.nameFieldStringValue=(sources.first!.hasDirectoryPath ? sources.first!.lastPathComponent : sources.first!.deletingPathExtension().lastPathComponent)+"."+target
+            save.allowedContentTypes=UTType(filenameExtension:target).map{[$0]} ?? [.data];save.message="Сохранить преобразованный файл"
+            guard save.runModal() == .OK,let url=save.url else{return};destination=url
+        }
+        let library=URL(fileURLWithPath:ttsLibraryField.stringValue).appendingPathComponent("venv/bin/python")
+        let fallback=URL(fileURLWithPath:ocrLibraryField.stringValue).appendingPathComponent("venv/bin/python")
+        let interpreter=[library,fallback,python,URL(fileURLWithPath:"/opt/homebrew/bin/python3"),URL(fileURLWithPath:"/usr/bin/python3")].first{FileManager.default.isExecutableFile(atPath:$0.path)}
+        let script=root.appendingPathComponent("format_converter.py")
+        guard let interpreter=interpreter,FileManager.default.isReadableFile(atPath:script.path) else{formatConversionNotice.stringValue="Не найден Python или format_converter.py рядом с приложением.";return}
+        let process=Process();process.executableURL=interpreter;process.arguments=[script.path,"--target",target,"--output",destination.path,"--title",titleField.stringValue]+sources.map{$0.path}
+        let pipe=Pipe();process.standardOutput=pipe;process.standardError=pipe
+        pipe.fileHandleForReading.readabilityHandler={[weak self] handle in
+            let data=handle.availableData;guard !data.isEmpty else{return};let message=String(decoding:data,as:UTF8.self)
+            DispatchQueue.main.async{guard let self=self else{return};self.append(message);if let last=message.split(separator:"\n").last{self.formatConversionNotice.stringValue=String(last)}}
+        }
+        process.terminationHandler={[weak self] finished in DispatchQueue.main.async{
+            guard let self=self else{return};self.formatConversionProcess=nil;pipe.fileHandleForReading.readabilityHandler=nil
+            if finished.terminationStatus==0{self.formatConversionNotice.stringValue="Готово: \(destination.path)";self.status.stringValue="Файл преобразован: \(destination.lastPathComponent)";self.append("Конвертация завершена: \(destination.path)\n")}
+            else{self.formatConversionNotice.stringValue="Не удалось выполнить конвертацию. Подробности добавлены в журнал.";self.append("Конвертация завершилась с ошибкой (код \(finished.terminationStatus)).\n")}
+        }}
+        do{try process.run();formatConversionProcess=process;formatConversionNotice.stringValue="Преобразую локально…";append("\nКонвертация \(sources.map{$0.lastPathComponent}.joined(separator:", ")) → \(target.uppercased())\n")}
+        catch{formatConversionNotice.stringValue="Не удалось запустить конвертацию: \(error.localizedDescription)"}
     }
     @objc func extractAudioFromVideo(){
         guard videoExtractionProcess == nil else{return}

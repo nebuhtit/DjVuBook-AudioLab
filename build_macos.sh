@@ -15,8 +15,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.djvubook.audiolab</string>
 <key>CFBundleName</key><string>DjVuBook AudioLab</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.15.0</string>
-<key>CFBundleVersion</key><string>1.15.0</string>
+<key>CFBundleShortVersionString</key><string>1.16.0</string>
+<key>CFBundleVersion</key><string>1.16.0</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSMicrophoneUsageDescription</key><string>Запись голоса для локального офлайн-распознавания.</string>
