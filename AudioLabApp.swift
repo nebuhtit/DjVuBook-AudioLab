@@ -34,6 +34,8 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     var transcriptionProcess: Process?
     var audioRecorder: AVAudioRecorder?
     var recordingURL: URL?
+    var recordingStartedAt: Date?
+    var recordingTimer: Timer?
     var recordVoiceButton: NSButton!
     var transcribeFileButton: NSButton!
     var stopTranscriptionButton: NSButton!
@@ -182,7 +184,9 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     @objc func recognitionLanguageChanged(){savePrefs()}
     @objc func toggleVoiceRecording(){
         if let recorder=audioRecorder,recorder.isRecording{
-            recorder.stop();audioRecorder=nil;recordVoiceButton.title="🎙 Записать речь";recordVoiceButton.isEnabled=false
+            recorder.stop();audioRecorder=nil;recordingTimer?.invalidate();recordingTimer=nil;recordingStartedAt=nil
+            transcriptionProgress.stopAnimation(nil);stopTranscriptionButton.isEnabled=false;stopTranscriptionButton.title="Остановить";speechNotice.textColor = .secondaryLabelColor
+            recordVoiceButton.title="🎙 Записать речь";recordVoiceButton.isEnabled=false;transcribeFileButton.isEnabled=true
             guard let url=recordingURL else{recordVoiceButton.isEnabled=true;return}
             speechNotice.stringValue="Запись завершена; начинаю распознавание офлайн…";transcribeAudio(url,deleteAfter:true);return
         }
@@ -194,13 +198,23 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         }else{speechNotice.stringValue="Разрешите доступ к микрофону в системных настройках macOS."}
     }
     func beginVoiceRecording(){
+        recordVoiceButton.isEnabled=true
         let whisper=URL(fileURLWithPath:sttLibraryField.stringValue).appendingPathComponent("bin/whisper-cli")
         let model=URL(fileURLWithPath:sttLibraryField.stringValue).appendingPathComponent("models/ggml-small-q5_1.bin")
         guard FileManager.default.isExecutableFile(atPath:whisper.path),FileManager.default.fileExists(atPath:model.path) else{speechNotice.stringValue="Сначала установите Whisper на внешний диск.";let alert=NSAlert();alert.messageText="Whisper ещё не установлен";alert.informativeText="Для офлайн-распознавания нужны whisper-cli и модель ggml-small-q5_1.bin (~190 МБ).";alert.runModal();return}
         let url=FileManager.default.temporaryDirectory.appendingPathComponent("AudioLab-voice-\(UUID().uuidString).m4a")
         let settings:[String:Any]=[AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:44100,AVNumberOfChannelsKey:1,AVEncoderBitRateKey:96000,AVEncoderAudioQualityKey:AVAudioQuality.high.rawValue]
-        do{let recorder=try AVAudioRecorder(url:url,settings:settings);guard recorder.record() else{throw NSError(domain:"Не удалось начать запись с микрофона.",code:1)};audioRecorder=recorder;recordingURL=url;recordVoiceButton.title="■ Завершить и распознать";speechNotice.stringValue="Идёт запись. Говорите; нажмите кнопку ещё раз, чтобы распознать текст."}
+        do{
+            let recorder=try AVAudioRecorder(url:url,settings:settings);guard recorder.record() else{throw NSError(domain:"Не удалось начать запись с микрофона.",code:1)}
+            audioRecorder=recorder;recordingURL=url;recordingStartedAt=Date();recordVoiceButton.isEnabled=true;recordVoiceButton.title="■ Завершить и распознать";speechNotice.textColor = .systemRed
+            transcribeFileButton.isEnabled=false;stopTranscriptionButton.title="Отменить запись";stopTranscriptionButton.isEnabled=true;transcriptionProgress.startAnimation(nil);updateRecordingStatus()
+            recordingTimer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] _ in self?.updateRecordingStatus()}
+        }
         catch{recordVoiceButton.isEnabled=true;speechNotice.stringValue="Не удалось записать звук: \(error.localizedDescription)"}
+    }
+    func updateRecordingStatus(){
+        guard let started=recordingStartedAt,audioRecorder?.isRecording == true else{return}
+        let seconds=max(0,Int(Date().timeIntervalSince(started)));speechNotice.stringValue=String(format:"● ИДЁТ ЗАПИСЬ · %02d:%02d · нажмите «Завершить и распознать»",seconds/60,seconds%60)
     }
     @objc func chooseAudioForTranscription(){
         let panel=NSOpenPanel();panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.allowedContentTypes=[.mp3,.aiff,.wav,.mpeg4Audio];panel.message="Выберите запись речи. Она будет распознана на Mac без отправки в интернет."
@@ -212,7 +226,7 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         let whisper=library.appendingPathComponent("bin/whisper-cli")
         let model=library.appendingPathComponent("models/ggml-small-q5_1.bin")
         guard FileManager.default.isExecutableFile(atPath:whisper.path),FileManager.default.fileExists(atPath:model.path) else{
-            recordVoiceButton.isEnabled=true
+            recordVoiceButton.isEnabled=true;transcribeFileButton.isEnabled=true;stopTranscriptionButton.isEnabled=false;transcriptionProgress.stopAnimation(nil)
             let alert=NSAlert();alert.messageText="Whisper ещё не установлен";alert.informativeText="Подключите диск 4TB_FILES_2025 или выберите папку Whisper. Для офлайн-распознавания нужны whisper-cli и модель ggml-small-q5_1.bin (~190 МБ).";alert.runModal();return
         }
         do{
@@ -224,11 +238,17 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
             var environment=ProcessInfo.processInfo.environment;let libraryPath=library.appendingPathComponent("lib").path;environment["DYLD_LIBRARY_PATH"]=libraryPath+(environment["DYLD_LIBRARY_PATH"].map{":"+$0} ?? "");process.environment=environment
             let pipe=Pipe();process.standardOutput=pipe;process.standardError=pipe
             pipe.fileHandleForReading.readabilityHandler={[weak self] handle in let data=handle.availableData;if !data.isEmpty{let message=String(decoding:data,as:UTF8.self);DispatchQueue.main.async{self?.append(message);self?.speechNotice.stringValue=String(message.split(separator:"\n").last ?? "Распознаю речь…")}}}
-            process.terminationHandler={[weak self] finished in DispatchQueue.main.async{guard let self=self else{return};self.transcriptionProcess=nil;self.transcriptionProgress.stopAnimation(nil);self.stopTranscriptionButton.isEnabled=false;self.recordVoiceButton.isEnabled=true;self.transcribeFileButton.isEnabled=true;if finished.terminationStatus==0,let transcript=try? String(contentsOf:transcript,encoding:.utf8),!transcript.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty{let result=transcript.trimmingCharacters(in:.whitespacesAndNewlines);let selected=self.textInput.selectedRange();let insertion=(selected.location==self.textInput.string.utf16.count && !self.textInput.string.isEmpty ? "\n\n":"")+result;self.textInput.insertText(insertion,replacementRange:selected);self.textChanged();self.speechNotice.stringValue="Речь распознана и добавлена в поле текста";self.window.makeFirstResponder(self.textInput)}else{self.speechNotice.stringValue="Не удалось распознать запись; подробности есть в журнале."};try? FileManager.default.removeItem(at:temp);if deleteAfter{try? FileManager.default.removeItem(at:audioURL)}}}
-            try process.run();transcriptionProcess=process;recordVoiceButton.isEnabled=false;transcribeFileButton.isEnabled=false;stopTranscriptionButton.isEnabled=true;transcriptionProgress.startAnimation(nil);speechNotice.stringValue="Распознаю речь локально на Mac…";append("\nWhisper: файл \(audioURL.lastPathComponent), язык \(recognitionLanguage.indexOfSelectedItem==0 ? "русский":"английский")\n")
-        }catch{recordVoiceButton.isEnabled=true;transcribeFileButton.isEnabled=true;speechNotice.stringValue="Не удалось запустить распознавание: \(error.localizedDescription)"}
+            process.terminationHandler={[weak self] finished in DispatchQueue.main.async{guard let self=self else{return};self.transcriptionProcess=nil;self.transcriptionProgress.stopAnimation(nil);self.stopTranscriptionButton.isEnabled=false;self.stopTranscriptionButton.title="Остановить";self.recordVoiceButton.isEnabled=true;self.transcribeFileButton.isEnabled=true;if finished.terminationStatus==0,let transcript=try? String(contentsOf:transcript,encoding:.utf8),!transcript.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty{let result=transcript.trimmingCharacters(in:.whitespacesAndNewlines);let selected=self.textInput.selectedRange();let insertion=(selected.location==self.textInput.string.utf16.count && !self.textInput.string.isEmpty ? "\n\n":"")+result;self.textInput.insertText(insertion,replacementRange:selected);self.textChanged();self.speechNotice.stringValue="Речь распознана и добавлена в поле текста";self.window.makeFirstResponder(self.textInput)}else{self.speechNotice.stringValue="Не удалось распознать запись; подробности есть в журнале."};try? FileManager.default.removeItem(at:temp);if deleteAfter{try? FileManager.default.removeItem(at:audioURL)}}}
+            try process.run();transcriptionProcess=process;recordVoiceButton.isEnabled=false;transcribeFileButton.isEnabled=false;stopTranscriptionButton.title="Остановить распознавание";stopTranscriptionButton.isEnabled=true;transcriptionProgress.startAnimation(nil);speechNotice.stringValue="Распознаю речь локально на Mac…";append("\nWhisper: файл \(audioURL.lastPathComponent), язык \(recognitionLanguage.indexOfSelectedItem==0 ? "русский":"английский")\n")
+        }catch{recordVoiceButton.isEnabled=true;transcribeFileButton.isEnabled=true;stopTranscriptionButton.isEnabled=false;transcriptionProgress.stopAnimation(nil);speechNotice.stringValue="Не удалось запустить распознавание: \(error.localizedDescription)"}
     }
-    @objc func stopTranscription(){transcriptionProcess?.terminate();if audioRecorder?.isRecording == true{audioRecorder?.stop();audioRecorder=nil;recordingURL=nil;recordVoiceButton.title="🎙 Записать речь";recordVoiceButton.isEnabled=true;speechNotice.stringValue="Запись отменена."}}
+    @objc func stopTranscription(){
+        if let recorder=audioRecorder,recorder.isRecording{
+            recorder.stop();audioRecorder=nil;recordingTimer?.invalidate();recordingTimer=nil;recordingStartedAt=nil
+            if let url=recordingURL{try? FileManager.default.removeItem(at:url)};recordingURL=nil
+            transcriptionProgress.stopAnimation(nil);recordVoiceButton.title="🎙 Записать речь";recordVoiceButton.isEnabled=true;transcribeFileButton.isEnabled=true;stopTranscriptionButton.title="Остановить";stopTranscriptionButton.isEnabled=false;speechNotice.stringValue="Запись отменена; аудиофайл удалён."
+        }else{transcriptionProcess?.terminate()}
+    }
     func savePrefs(){UserDefaults.standard.set(sourceField.stringValue,forKey:"source");UserDefaults.standard.set(pagesField.stringValue,forKey:"pages");UserDefaults.standard.set(titleField.stringValue,forKey:"title");UserDefaults.standard.set(authorField.stringValue,forKey:"author");UserDefaults.standard.set(engine.indexOfSelectedItem,forKey:"engine");UserDefaults.standard.set(memory.indexOfSelectedItem,forKey:"memory");UserDefaults.standard.set(language.indexOfSelectedItem,forKey:"speechLanguage");UserDefaults.standard.set(recognitionLanguage.indexOfSelectedItem,forKey:"recognitionLanguage");UserDefaults.standard.set(speechEngine.indexOfSelectedItem,forKey:"speechEngine");UserDefaults.standard.set(numbersCheckbox.state == .on,forKey:"readNumbers");UserDefaults.standard.set(speedSlider.doubleValue,forKey:"speechSpeed");UserDefaults.standard.set(sentencePauseSlider.doubleValue,forKey:"sentencePause");UserDefaults.standard.set(paragraphPauseSlider.doubleValue,forKey:"paragraphPause");UserDefaults.standard.set(punctuationPauseSlider.doubleValue,forKey:"punctuationPause");UserDefaults.standard.set(textInput.string,forKey:"draftText");UserDefaults.standard.set(ocrLibraryField.stringValue,forKey:"ocrLibraryRoot");UserDefaults.standard.set(ttsLibraryField.stringValue,forKey:"ttsLibraryRoot");UserDefaults.standard.set(sttLibraryField.stringValue,forKey:"sttLibraryRoot")}
     func restore(){sourceField.stringValue=UserDefaults.standard.string(forKey:"source") ?? "";pagesField.stringValue=UserDefaults.standard.string(forKey:"pages") ?? "all";titleField.stringValue=UserDefaults.standard.string(forKey:"title") ?? "";authorField.stringValue=UserDefaults.standard.string(forKey:"author") ?? "";textInput.string=UserDefaults.standard.string(forKey:"draftText") ?? "";ocrLibraryField.stringValue=UserDefaults.standard.string(forKey:"ocrLibraryRoot") ?? ocrLibraryField.stringValue;ttsLibraryField.stringValue=UserDefaults.standard.string(forKey:"ttsLibraryRoot") ?? ttsLibraryField.stringValue;sttLibraryField.stringValue=UserDefaults.standard.string(forKey:"sttLibraryRoot") ?? sttLibraryField.stringValue;engine.selectItem(at:UserDefaults.standard.integer(forKey:"engine"));memory.selectItem(at:UserDefaults.standard.integer(forKey:"memory"));language.selectItem(at:UserDefaults.standard.integer(forKey:"speechLanguage"));recognitionLanguage.selectItem(at:UserDefaults.standard.integer(forKey:"recognitionLanguage"));speechEngine.selectItem(at:UserDefaults.standard.integer(forKey:"speechEngine"));numbersCheckbox.state=(UserDefaults.standard.object(forKey:"readNumbers") as? Bool ?? true) ? .on:.off;speedSlider.doubleValue=UserDefaults.standard.object(forKey:"speechSpeed") as? Double ?? 1.0;sentencePauseSlider.doubleValue=UserDefaults.standard.object(forKey:"sentencePause") as? Double ?? 0.6;paragraphPauseSlider.doubleValue=UserDefaults.standard.object(forKey:"paragraphPause") as? Double ?? 1.8;punctuationPauseSlider.doubleValue=UserDefaults.standard.object(forKey:"punctuationPause") as? Double ?? 0.25;updateVoiceOptions();speechSettingsChanged();updateSpeechEngineUI();textChanged()}
     func append(_ s:String){log.textStorage?.append(NSAttributedString(string:s));log.scrollToEndOfDocument(nil)}
