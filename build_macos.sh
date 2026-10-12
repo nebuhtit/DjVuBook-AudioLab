@@ -6,7 +6,7 @@ APP="$OUT/DjVuBook AudioLab.app"
 mkdir -p "$APP/Contents/MacOS" "$OUT"
 MODULE_CACHE="${TMPDIR:-/tmp}/DjVuBookAudioLabSwiftModuleCache"
 mkdir -p "$MODULE_CACHE"
-swiftc -module-cache-path "$MODULE_CACHE" -framework AppKit -framework CryptoKit "$ROOT/AudioLabApp.swift" -o "$APP/Contents/MacOS/DjVuBook"
+swiftc -module-cache-path "$MODULE_CACHE" -framework AppKit -framework AVFoundation -framework CryptoKit -framework UniformTypeIdentifiers "$ROOT/AudioLabApp.swift" -o "$APP/Contents/MacOS/DjVuBook"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -15,9 +15,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.djvubook.audiolab</string>
 <key>CFBundleName</key><string>DjVuBook AudioLab</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.13.0</string>
+<key>CFBundleShortVersionString</key><string>1.15.0</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSMicrophoneUsageDescription</key><string>Запись голоса для локального офлайн-распознавания.</string>
 </dict></plist>
 PLIST
 cp "$ROOT"/*.py "$OUT/"

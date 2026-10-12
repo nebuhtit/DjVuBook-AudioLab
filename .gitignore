@@ -16,3 +16,4 @@ gui.log
 *.traineddata
 .DjVuBook\ AudioLab.app/
 dist/
+speech-runtime/
