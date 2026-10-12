@@ -249,6 +249,8 @@ def convert(inputs: list[Path], target: str, destination: Path, title: str = "")
     if target in {"txt", "md", "epub"} and (ext in TEXT_EXTS or ext in {".epub", ".pdf", ".djvu", ".djv"}):
         if len(inputs) != 1:
             raise RuntimeError("Для текстового экспорта выберите один документ")
+        if destination.resolve() == inputs[0].resolve():
+            raise RuntimeError("Выберите другое имя или папку, чтобы не перезаписать исходный файл")
         save_text(inputs[0], target, destination, title)
         return f"Сохранено: {destination}"
     if target == "pdf" and (ext in TEXT_EXTS or ext == ".epub"):

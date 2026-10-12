@@ -375,11 +375,12 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         let ext=sources.first?.pathExtension.lowercased() ?? ""
         let isImageSet=sources.first?.hasDirectoryPath == true || ["jpg","jpeg","png","heic","tif","tiff","bmp","webp"].contains(ext)
         let isEpub=ext=="epub",isText=["txt","md","markdown","mdown","html","htm","xhtml","docx","doc"].contains(ext)
+        guard sources.count == 1 || isImageSet else{formatConversionNotice.stringValue="Выберите один документ или несколько изображений.";return}
         let formats:[(String,String)]
         if isImageSet{formats=[("PDF","pdf"),("DjVu — со сжатием страниц","djvu"),("EPUB — книга из страниц-изображений","epub"),("PNG — страницы","png"),("JPEG — страницы","jpg")]}
         else if isEpub{formats=[("TXT — текст глав","txt"),("Markdown — текст глав","md"),("PDF — простой текстовый документ","pdf")]}
         else if isText{formats=[("TXT — простой текст","txt"),("Markdown","md"),("PDF — простой текстовый документ","pdf"),("EPUB — электронная книга","epub")]}
-        else if ["pdf","djvu","djv"].contains(ext){formats=[("PDF","pdf"),("DjVu — растрированные страницы","djvu"),("PNG — страницы","png"),("JPEG — страницы","jpg"),("TXT — текстовый слой","txt"),("Markdown — текстовый слой","md"),("EPUB — из текстового слоя","epub")]}
+        else if ["pdf","djvu","djv"].contains(ext){formats=ext=="pdf" ? [("PDF","pdf"),("DjVu — растрированные страницы","djvu"),("PNG — страницы","png"),("JPEG — страницы","jpg"),("TXT — текстовый слой","txt"),("Markdown — текстовый слой","md"),("EPUB — из текстового слоя","epub")] : [("PDF","pdf"),("PNG — страницы","png"),("JPEG — страницы","jpg"),("TXT — текстовый слой","txt"),("Markdown — текстовый слой","md"),("EPUB — из текстового слоя","epub")]}
         else{formatConversionNotice.stringValue="Формат \(ext.uppercased()) не поддерживается.";return}
         let popup=NSPopUpButton(frame:NSRect(x:0,y:0,width:330,height:28),pullsDown:false)
         popup.addItems(withTitles:formats.map{$0.0})
