@@ -29,6 +29,11 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
     var audioTimeLabel = NSTextField(labelWithString:"00:00 / 00:00")
     var playAudioButton: NSButton!
     var stopAudioButton: NSButton!
+    var extractVideoButton: NSButton!
+    var stopVideoExtractionButton: NSButton!
+    var videoExtractionProcess: Process?
+    var videoExtractionProgress = NSProgressIndicator()
+    var videoExtractionNotice = NSTextField(labelWithString: "Извлекайте аудиодорожку из видео в MP3 офлайн")
     var speechProgress = NSProgressIndicator()
     var speechProcess: Process?
     var transcriptionProcess: Process?
@@ -135,6 +140,11 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         stopAudioButton=NSButton(title:"Стоп",target:self,action:#selector(stopAudio));stopAudioButton.isEnabled=false;playerRow.addArrangedSubview(stopAudioButton)
         audioSeekSlider.isEnabled=false;audioSeekSlider.target=self;audioSeekSlider.action=#selector(seekAudio);audioSeekSlider.widthAnchor.constraint(equalToConstant:300).isActive=true;playerRow.addArrangedSubview(audioSeekSlider)
         audioTimeLabel.widthAnchor.constraint(equalToConstant:100).isActive=true;playerRow.addArrangedSubview(audioTimeLabel);main.addArrangedSubview(playerRow)
+        let videoRow=NSStackView();videoRow.spacing=8
+        extractVideoButton=NSButton(title:"Извлечь MP3 из видео…",target:self,action:#selector(extractAudioFromVideo));videoRow.addArrangedSubview(extractVideoButton)
+        stopVideoExtractionButton=NSButton(title:"Остановить конвертацию",target:self,action:#selector(stopVideoExtraction));stopVideoExtractionButton.isEnabled=false;videoRow.addArrangedSubview(stopVideoExtractionButton)
+        videoExtractionProgress.isIndeterminate=true;videoExtractionProgress.isDisplayedWhenStopped=false;videoExtractionProgress.widthAnchor.constraint(equalToConstant:180).isActive=true;videoRow.addArrangedSubview(videoExtractionProgress);main.addArrangedSubview(videoRow)
+        videoExtractionNotice.textColor = .secondaryLabelColor;main.addArrangedSubview(videoExtractionNotice)
         status.lineBreakMode = .byWordWrapping;main.addArrangedSubview(status)
         main.addArrangedSubview(timeLabel)
         progress.isIndeterminate=false;progress.maxValue=1;progress.isDisplayedWhenStopped=false;progress.widthAnchor.constraint(equalToConstant:720).isActive=true;main.addArrangedSubview(progress)
@@ -351,6 +361,41 @@ final class AudioLab: NSObject, NSApplicationDelegate, AVAudioPlayerDelegate {
         let panel=NSOpenPanel();panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.allowedContentTypes=[.mp3,.aiff,.wav,.mpeg4Audio];panel.message="Выберите MP3, AIFF, WAV или M4A для прослушивания"
         if panel.runModal() == .OK,let url=panel.url{loadAudio(url);speechNotice.stringValue="Готово к прослушиванию: \(url.lastPathComponent)"}
     }
+    @objc func extractAudioFromVideo(){
+        guard videoExtractionProcess == nil else{return}
+        let sourcePanel=NSOpenPanel();sourcePanel.canChooseFiles=true;sourcePanel.canChooseDirectories=false;sourcePanel.allowsMultipleSelection=false
+        sourcePanel.allowedContentTypes=["mp4","mov","m4v","mkv","avi","webm","mpeg","mpg","mts","m2ts","3gp"].compactMap{UTType(filenameExtension:$0)}
+        sourcePanel.message="Выберите видеофайл. Аудио будет извлечено локально в MP3."
+        guard sourcePanel.runModal() == .OK,let source=sourcePanel.url else{return}
+        let savePanel=NSSavePanel();savePanel.allowedContentTypes=[.mp3];savePanel.nameFieldStringValue=source.deletingPathExtension().lastPathComponent+"-audio.mp3";savePanel.message="Сохранить извлечённый звук как MP3"
+        guard savePanel.runModal() == .OK,let destination=savePanel.url else{return}
+        let python=URL(fileURLWithPath:ttsLibraryField.stringValue).appendingPathComponent("venv/bin/python")
+        let script=root.appendingPathComponent("extract_video_audio.py")
+        guard FileManager.default.isExecutableFile(atPath:python.path),FileManager.default.isReadableFile(atPath:script.path) else{videoExtractionNotice.stringValue="Не найден Python из выбранного окружения Silero/Marker или скрипт конвертации.";return}
+        let process=Process();process.executableURL=python;process.arguments=[script.path,source.path,destination.path]
+        let pipe=Pipe();process.standardOutput=pipe;process.standardError=pipe
+        pipe.fileHandleForReading.readabilityHandler={[weak self] handle in
+            let data=handle.availableData;guard !data.isEmpty else{return};let message=String(decoding:data,as:UTF8.self)
+            DispatchQueue.main.async{
+                guard let self=self else{return};self.append(message)
+                if let line=message.split(separator:"\n").last, line.hasPrefix("out_time="){
+                    self.videoExtractionNotice.stringValue="Извлекаю звук · \(line.dropFirst("out_time=".count).split(separator:".").first ?? "")"
+                }
+            }
+        }
+        process.terminationHandler={[weak self] finished in DispatchQueue.main.async{
+            guard let self=self else{return};self.videoExtractionProcess=nil;self.videoExtractionProgress.stopAnimation(nil);self.extractVideoButton.isEnabled=true;self.stopVideoExtractionButton.isEnabled=false
+            if finished.terminationStatus == 0,FileManager.default.fileExists(atPath:destination.path){
+                self.videoExtractionNotice.stringValue="Готово: \(destination.lastPathComponent) — открываю в плеере";self.append("Аудио из видео сохранено: \(destination.path)\n");self.loadAudio(destination)
+            }else{
+                try? FileManager.default.removeItem(at:destination);self.videoExtractionNotice.stringValue="Конвертация остановлена или не удалась; подробности есть в журнале."
+            }
+        }}
+        do{
+            try process.run();videoExtractionProcess=process;extractVideoButton.isEnabled=false;stopVideoExtractionButton.isEnabled=true;videoExtractionProgress.startAnimation(nil);videoExtractionNotice.stringValue="Извлекаю аудиодорожку локально…";append("\nВидео → MP3: \(source.lastPathComponent)\n")
+        }catch{extractVideoButton.isEnabled=true;stopVideoExtractionButton.isEnabled=false;videoExtractionProgress.stopAnimation(nil);videoExtractionNotice.stringValue="Не удалось запустить конвертацию: \(error.localizedDescription)"}
+    }
+    @objc func stopVideoExtraction(){videoExtractionNotice.stringValue="Останавливаю и удаляю незавершённый MP3…";videoExtractionProcess?.terminate()}
     @objc func toggleAudio(){
         guard let player=audioPlayer else{return}
         if player.isPlaying{player.pause();playAudioButton.title="▶ Продолжить";audioTimer?.invalidate();audioTimer=nil}
